@@ -1,8 +1,8 @@
 """Tokenize SQL so that it can be formatted."""
 
-from dataclasses import dataclass, field
 import re
 import sys
+from dataclasses import dataclass, field
 
 # These words get their own line followed by increased indent
 TOP_LEVEL_KEYWORDS = [
@@ -53,6 +53,8 @@ TOP_LEVEL_KEYWORDS = [
     "ORDER BY",
     "OUTER JOIN",
     "PARTITION BY",
+    "RANGE BETWEEN",
+    "RANGE",
     "RIGHT JOIN",
     "RIGHT OUTER JOIN",
     "ROLLUP",
@@ -60,6 +62,9 @@ TOP_LEVEL_KEYWORDS = [
     "ROWS",
     "SELECT AS STRUCT",
     "SELECT AS VALUE",
+    "SELECT DISTINCT AS STRUCT",
+    "SELECT DISTINCT AS VALUE",
+    "SELECT DISTINCT",
     "SELECT",
     "UNION ALL",
     "UNION DISTINCT",

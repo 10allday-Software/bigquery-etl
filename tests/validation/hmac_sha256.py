@@ -5,16 +5,22 @@ The vectors are located in tests/validation/data/hmac_sha256_validation.json.
 """
 
 import json
+
 import pytest
-from bigquery_etl.parse_udf import read_udf_dirs, RawUdf, udf_tests_sql
 from google.cloud import bigquery
+
+from bigquery_etl.routine.parse_routine import (
+    RawRoutine,
+    read_routine_dir,
+    routine_tests_sql,
+)
 
 validation_data_file = "tests/validation/data/hmac_sha256_validation.json"
 
 
 def udfs():
     """Get all udfs and assertions."""
-    return read_udf_dirs("tests/assert", "udf", "udf_js")
+    return read_routine_dir("tests/assert", "udf", "udf_js")
 
 
 def load_data():
@@ -23,7 +29,7 @@ def load_data():
         return json.load(f)["data"]
 
 
-def generate_raw_udf(test_cases):
+def generate_raw_routine(test_cases):
     """Generate a SQL test for each instance in hmac_sha256_validation.json."""
     test_sql_fixture = (
         "SELECT assert_equals("
@@ -37,14 +43,15 @@ def generate_raw_udf(test_cases):
     )
     test_sql_stmnts = [test_sql_fixture.format(**test_case) for test_case in test_cases]
 
-    return RawUdf.from_text(
-        "\n".join(test_sql_stmnts), "udf", "hmac_sha256", is_defined=False
+    return RawRoutine.from_file(
+        from_text="\n".join(test_sql_stmnts),
+        path="udf" / "hmac_sha256" / "hmac_sha256" / "sql",
     )
 
 
 def generate_sql():
     """Generate SQL statements to test."""
-    return udf_tests_sql(generate_raw_udf(load_data()), udfs())
+    return routine_tests_sql(generate_raw_routine(load_data()), udfs())
 
 
 @pytest.mark.parametrize("sql", generate_sql())

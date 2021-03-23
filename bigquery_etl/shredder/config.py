@@ -2,15 +2,15 @@
 
 """Meta data about tables and ids for self serve deletion."""
 
+import logging
+import re
 from dataclasses import dataclass
 from functools import partial
 from typing import Tuple, Union
-import re
 
 from google.cloud import bigquery
 
 from ..util.bigquery_id import qualified_table_id
-
 
 SHARED_PROD = "moz-fx-data-shared-prod"
 GLEAN_SCHEMA_ID = "glean_ping_1"
@@ -45,7 +45,7 @@ class DeleteTarget:
     """
 
     table: str
-    field: Union[str, Tuple[str]]
+    field: Union[str, Tuple[str, ...]]
     project: str = SHARED_PROD
 
     @property
@@ -59,7 +59,7 @@ class DeleteTarget:
         return self.table.partition(".")[0]
 
     @property
-    def fields(self) -> Tuple[str]:
+    def fields(self) -> Tuple[str, ...]:
         """Fields."""
         if isinstance(self.field, tuple):
             return self.field
@@ -72,8 +72,7 @@ IMPRESSION_ID = "impression_id"
 USER_ID = "user_id"
 POCKET_ID = "pocket_id"
 SHIELD_ID = "shield_id"
-ECOSYSTEM_CLIENT_ID = "payload.ecosystem_client_id"
-PIONEER_ID = "payload.pioneer_id"
+PIONEER_ID = "pioneer_id"
 ID = "id"
 CFR_ID = f"COALESCE({CLIENT_ID}, {IMPRESSION_ID})"
 FXA_USER_ID = "jsonPayload.fields.user_id"
@@ -110,9 +109,32 @@ SYNC_SOURCES = (
         field="SUBSTR(hmac_user_id, 0, 32)",
     ),
 )
-SOURCES = [DESKTOP_SRC, IMPRESSION_SRC, CFR_SRC, FXA_HMAC_SRC, FXA_SRC] + list(
-    SYNC_SOURCES
+LEGACY_MOBILE_SOURCES = tuple(
+    DeleteSource(
+        table=f"{product}_stable.deletion_request_v1",
+        field="metrics.uuid.legacy_ids_client_id",
+    )
+    for product in (
+        "org_mozilla_ios_fennec",
+        "org_mozilla_ios_firefox",
+        "org_mozilla_ios_firefoxbeta",
+        "org_mozilla_tv_firefox",
+        "mozilla_lockbox",
+    )
 )
+SOURCES = (
+    [
+        DESKTOP_SRC,
+        IMPRESSION_SRC,
+        CFR_SRC,
+        FXA_HMAC_SRC,
+        FXA_SRC,
+    ]
+    + list(SYNC_SOURCES)
+    + list(LEGACY_MOBILE_SOURCES)
+)
+
+LEGACY_MOBILE_IDS = tuple(CLIENT_ID for _ in LEGACY_MOBILE_SOURCES)
 
 
 client_id_target = partial(DeleteTarget, field=CLIENT_ID)
@@ -121,6 +143,7 @@ impression_id_target = partial(DeleteTarget, field=IMPRESSION_ID)
 cfr_id_target = partial(DeleteTarget, field=CFR_ID)
 fxa_user_id_target = partial(DeleteTarget, field=FXA_USER_ID)
 user_id_target = partial(DeleteTarget, field=USER_ID)
+pioneer_target = partial(DeleteTarget, field=PIONEER_ID)
 
 DELETE_TARGETS = {
     client_id_target(
@@ -158,6 +181,7 @@ DELETE_TARGETS = {
     client_id_target(table="telemetry_derived.experiments_v1"): DESKTOP_SRC,
     client_id_target(table="telemetry_derived.main_events_v1"): DESKTOP_SRC,
     client_id_target(table="telemetry_derived.main_summary_v4"): DESKTOP_SRC,
+    client_id_target(table="telemetry_derived.main_1pct_v1"): DESKTOP_SRC,
     client_id_target(table="telemetry_stable.block_autoplay_v1"): DESKTOP_SRC,
     client_id_target(table="telemetry_stable.crash_v4"): DESKTOP_SRC,
     client_id_target(table="telemetry_stable.downgrade_v4"): DESKTOP_SRC,
@@ -237,6 +261,51 @@ DELETE_TARGETS = {
     user_id_target(
         table="firefox_accounts_derived.fxa_users_services_last_seen_v1"
     ): FXA_SRC,
+    # legacy mobile
+    DeleteTarget(
+        table="telemetry_stable.core_v1",
+        field=LEGACY_MOBILE_IDS,
+    ): LEGACY_MOBILE_SOURCES,
+    DeleteTarget(
+        table="telemetry_stable.core_v2",
+        field=LEGACY_MOBILE_IDS,
+    ): LEGACY_MOBILE_SOURCES,
+    DeleteTarget(
+        table="telemetry_stable.core_v3",
+        field=LEGACY_MOBILE_IDS,
+    ): LEGACY_MOBILE_SOURCES,
+    DeleteTarget(
+        table="telemetry_stable.core_v4",
+        field=LEGACY_MOBILE_IDS,
+    ): LEGACY_MOBILE_SOURCES,
+    DeleteTarget(
+        table="telemetry_stable.core_v5",
+        field=LEGACY_MOBILE_IDS,
+    ): LEGACY_MOBILE_SOURCES,
+    DeleteTarget(
+        table="telemetry_stable.core_v6",
+        field=LEGACY_MOBILE_IDS,
+    ): LEGACY_MOBILE_SOURCES,
+    DeleteTarget(
+        table="telemetry_stable.core_v7",
+        field=LEGACY_MOBILE_IDS,
+    ): LEGACY_MOBILE_SOURCES,
+    DeleteTarget(
+        table="telemetry_stable.core_v8",
+        field=LEGACY_MOBILE_IDS,
+    ): LEGACY_MOBILE_SOURCES,
+    DeleteTarget(
+        table="telemetry_stable.core_v9",
+        field=LEGACY_MOBILE_IDS,
+    ): LEGACY_MOBILE_SOURCES,
+    DeleteTarget(
+        table="telemetry_stable.core_v10",
+        field=LEGACY_MOBILE_IDS,
+    ): LEGACY_MOBILE_SOURCES,
+    DeleteTarget(
+        table="telemetry_stable.mobile_event_v1",
+        field=LEGACY_MOBILE_IDS,
+    ): LEGACY_MOBILE_SOURCES,
 }
 
 SEARCH_IGNORE_TABLES = {source.table for source in SOURCES}
@@ -272,9 +341,6 @@ SEARCH_IGNORE_TABLES |= {
         client_id_target(table="eng_workflow_stable.build_v1"),
         # other
         DeleteTarget(table="telemetry_stable.pioneer_study_v4", field=PIONEER_ID),
-        DeleteTarget(
-            table="telemetry_stable.pre_account_v4", field=ECOSYSTEM_CLIENT_ID
-        ),
     ]
 }
 
@@ -353,5 +419,114 @@ def find_glean_targets(pool, client, project=SHARED_PROD):
                 chunksize=1,
             )
             if any(field.name == CLIENT_ID for field in table.schema)
+        },
+    }
+
+
+EXPERIMENT_ANALYSIS = "moz-fx-data-experiments"
+
+
+def find_experiment_analysis_targets(pool, client, project=EXPERIMENT_ANALYSIS):
+    """Return a dict like DELETE_TARGETS for experiment analysis tables."""
+    datasets = {dataset.reference for dataset in client.list_datasets(project)}
+
+    tables = [
+        table
+        for tables in pool.map(
+            client.list_tables,
+            datasets,
+            chunksize=1,
+        )
+        for table in tables
+        if table.table_type != "VIEW" and not table.table_id.startswith("statistics_")
+    ]
+
+    return {
+        client_id_target(table=qualified_table_id(table)): DESKTOP_SRC
+        for table in tables
+    }
+
+
+PIONEER_PROD = "moz-fx-data-pioneer-prod"
+
+
+def find_pioneer_targets(pool, client, project=PIONEER_PROD, study_projects=[]):
+    """Return a dict like DELETE_TARGETS for Pioneer tables."""
+
+    def __get_tables_with_pioneer_id__(dataset):
+        tables_with_pioneer_id = []
+        for table in client.list_tables(dataset):
+            table_ref = client.get_table(table)
+            if (
+                any(field.name == PIONEER_ID for field in table_ref.schema)
+                and table_ref.table_type != "VIEW"
+            ):
+                tables_with_pioneer_id.append(table_ref)
+        return tables_with_pioneer_id
+
+    datasets = {
+        dataset.reference
+        for dataset in client.list_datasets(project)
+        if dataset.reference.dataset_id.startswith("pioneer_")
+    }
+    # There should be a single stable and derived dataset per study
+    stable_datasets = {dr for dr in datasets if dr.dataset_id.endswith("_stable")}
+    derived_datasets = {dr for dr in datasets if dr.dataset_id.endswith("_derived")}
+
+    stable_tables = [
+        table
+        for tables in pool.map(client.list_tables, stable_datasets, chunksize=1)
+        for table in tables
+    ]
+
+    sources = {
+        table.dataset_id: DeleteSource(qualified_table_id(table), PIONEER_ID, project)
+        # dict comprehension will only keep the last value for a given key, so
+        # sort by table_id to use the latest version
+        for table in sorted(stable_tables, key=lambda t: t.table_id)
+        if table.table_id.startswith("deletion_request_")
+    }
+
+    # Dictionary mapping analysis dataset names to corresponding study names.
+    # We expect analysis tables to be created only under `analysis` datasets
+    # in study projects. These datasets are labeled with study names which
+    # we use for discovering corresponding delete request tables later on.
+    analysis_datasets = {}
+    for project in study_projects:
+        analysis_dataset = bigquery.DatasetReference(project, "analysis")
+        labels = client.get_dataset(analysis_dataset).labels
+        study_name = labels.get("study_name")
+        if study_name is None:
+            logging.error(
+                f"Dataset {analysis_dataset} does not have `study_name` label, skipping..."
+            )
+        else:
+            analysis_datasets[analysis_dataset] = study_name
+
+    return {
+        **{
+            # stable tables
+            pioneer_target(
+                table=qualified_table_id(table), project=PIONEER_PROD
+            ): sources[table.dataset_id]
+            for table in stable_tables
+            if not table.table_id.startswith("deletion_request_")
+            and not table.table_id.startswith("pioneer_enrollment_")
+        },
+        **{
+            # derived tables with pioneer_id
+            pioneer_target(
+                table=qualified_table_id(table), project=PIONEER_PROD
+            ): sources[table.dataset_id]
+            for dataset in derived_datasets
+            for table in __get_tables_with_pioneer_id__(dataset)
+        },
+        **{
+            # tables with pioneer_id located in study analysis projects
+            pioneer_target(
+                table=qualified_table_id(table), project=table.project
+            ): sources[study.replace("-", "_") + "_stable"]
+            for dataset, study in analysis_datasets.items()
+            for table in __get_tables_with_pioneer_id__(dataset)
         },
     }

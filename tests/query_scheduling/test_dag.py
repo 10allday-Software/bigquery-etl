@@ -1,15 +1,16 @@
 from pathlib import Path
+
 import pytest
 
+from bigquery_etl.metadata.parse_metadata import Metadata
 from bigquery_etl.query_scheduling.dag import (
     Dag,
-    DagParseException,
     DagDefaultArgs,
+    DagParseException,
     PublicDataJsonDag,
 )
-from bigquery_etl.metadata.parse_metadata import Metadata
-from bigquery_etl.query_scheduling.task import Task
 from bigquery_etl.query_scheduling.dag_collection import DagCollection
+from bigquery_etl.query_scheduling.task import Task
 
 TEST_DIR = Path(__file__).parent.parent
 
@@ -36,6 +37,7 @@ class TestDag:
             TEST_DIR
             / "data"
             / "test_sql"
+            / "moz-fx-data-test-project"
             / "test"
             / "incremental_query_v1"
             / "query.sql"
@@ -65,6 +67,7 @@ class TestDag:
             TEST_DIR
             / "data"
             / "test_sql"
+            / "moz-fx-data-test-project"
             / "test"
             / "incremental_query_v1"
             / "query.sql"
@@ -210,6 +213,7 @@ class TestDag:
             TEST_DIR
             / "data"
             / "test_sql"
+            / "moz-fx-data-test-project"
             / "test"
             / "incremental_query_v1"
             / "query.sql"

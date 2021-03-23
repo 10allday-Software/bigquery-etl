@@ -7,8 +7,14 @@ This repository uses `pytest`:
 # create a venv
 python3.8 -m venv venv/
 
-# install requirements
-venv/bin/pip install -r requirements.txt
+# install pip-tools for managing dependencies
+venv/bin/pip install pip-tools -c requirements.in
+
+# install python dependencies with pip-sync (provided by pip-tools)
+venv/bin/pip-sync
+
+# install java dependencies with maven
+mvn dependency:copy-dependencies
 
 # run pytest with all linters and 4 workers in parallel
 venv/bin/pytest --black --docstyle --flake8 --mypy-ignore-missing-imports -n 4
@@ -66,11 +72,13 @@ SELECT
 How to Configure a Generated Test
 ===
 
-1. Make a directory for test resources named `tests/{dataset}/{query_name}/{test_name}/`,
+1. Make a directory for test resources named `tests/{dataset}/{table}/{test_name}/`,
    e.g. `tests/telemetry_derived/clients_last_seen_raw_v1/test_single_day`
-   - `query_name` must match a query file named `sql/{dataset}/{query_name}.sql`, e.g.
-     `sql/telemetry_derived/clients_last_seen_v1.sql`
+   - `table` must match a directory named like `{dataset}/{table}`, e.g.
+     `telemetry_derived/clients_last_seen_v1`
    - `test_name` should start with `test_`, e.g. `test_single_day`
+   - If `test_name` is `test_init` or `test_script`, then the query will run `init.sql`
+     or `script.sql` respectively; otherwise, the test will run `query.sql`
 1. Add `.yaml` files for input tables, e.g. `clients_daily_v6.yaml`
    - Include the dataset prefix if it's set in the tested query,
      e.g. `analysis.clients_last_seen_v1.yaml`
@@ -94,6 +102,21 @@ How to Configure a Generated Test
    `clients_daily_v6.schema.json`
 1. Optionally add `query_params.yaml` to define query parameters
    - `query_params` must be a list
+
+Init Tests
+===
+
+Tests of `init.sql` statements are supported, similarly to other generated tests.
+Simply name the test `test_init`. The other guidelines still apply.
+
+*Note*: Init SQL statements must contain a create statement with the dataset
+and table name, like so:
+```
+CREATE OR REPLACE TABLE
+  dataset.table_v1
+AS
+...
+```
 
 Additional Guidelines and Options
 ---

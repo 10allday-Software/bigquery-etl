@@ -1,30 +1,32 @@
 """Represents a scheduled Airflow task."""
 
-import attr
-import cattr
-import glob
+import logging
 import os
 import re
-import logging
-from google.cloud import bigquery
+from fnmatch import fnmatchcase
+from pathlib import Path
 from typing import List, Optional, Tuple
 
+import attr
+import cattr
 
+from bigquery_etl.dependency import extract_table_references_without_views
 from bigquery_etl.metadata.parse_metadata import Metadata
 from bigquery_etl.query_scheduling.utils import (
     is_date_string,
     is_email,
-    is_valid_dag_name,
+    is_schedule_interval,
     is_timedelta_string,
+    is_valid_dag_name,
     schedule_interval_delta,
 )
 
-
 AIRFLOW_TASK_TEMPLATE = "airflow_task.j2"
 QUERY_FILE_RE = re.compile(
-    r"^.*/([a-zA-Z0-9_]+)/([a-zA-Z0-9_]+)_(v[0-9]+)/(?:query\.sql|part1\.sql)$"
+    r"^(?:.*/)?([a-zA-Z0-9_-]+)/([a-zA-Z0-9_]+)/"
+    r"([a-zA-Z0-9_]+)_(v[0-9]+)/(?:query\.sql|part1\.sql|script\.sql|query\.py)$"
 )
-DEFAULT_PROJECT = "moz-fx-data-shared-prod"
+DEFAULT_DESTINATION_TABLE_STR = "use-default-destination-table"
 
 
 class TaskParseException(Exception):
@@ -51,7 +53,7 @@ class UnscheduledTask(Exception):
     pass
 
 
-@attr.s(auto_attribs=True)
+@attr.s(auto_attribs=True, frozen=True)
 class TaskRef:
     """
     Representation of a reference to another task.
@@ -64,6 +66,7 @@ class TaskRef:
     dag_name: str = attr.ib()
     task_id: str = attr.ib()
     execution_delta: Optional[str] = attr.ib(None)
+    schedule_interval: Optional[str] = attr.ib(None)
 
     @execution_delta.validator
     def validate_execution_delta(self, attribute, value):
@@ -73,6 +76,43 @@ class TaskRef:
                 f"Invalid timedelta definition for {attribute}: {value}."
                 "Timedeltas should be specified like: 1h, 30m, 1h15m, 1d4h45m, ..."
             )
+
+    @schedule_interval.validator
+    def validate_schedule_interval(self, attribute, value):
+        """Validate the schedule_interval format."""
+        if value is not None and not is_schedule_interval(value):
+            raise ValueError(f"Invalid schedule_interval {value}.")
+
+
+# Know tasks in telemetry-airflow, like stable table tasks
+# https://github.com/mozilla/telemetry-airflow/blob/master/dags/copy_deduplicate.py
+EXTERNAL_TASKS = {
+    TaskRef(
+        dag_name="copy_deduplicate",
+        task_id="copy_deduplicate_main_ping",
+        schedule_interval="0 1 * * *",
+    ): ["telemetry_stable.main_v4"],
+    TaskRef(
+        dag_name="copy_deduplicate",
+        task_id="bq_main_events",
+        schedule_interval="0 1 * * *",
+    ): ["telemetry_derived.main_events_v1"],
+    TaskRef(
+        dag_name="copy_deduplicate",
+        task_id="event_events",
+        schedule_interval="0 1 * * *",
+    ): ["telemetry_derived.event_events_v1"],
+    TaskRef(
+        dag_name="copy_deduplicate",
+        task_id="baseline_clients_last_seen",
+        schedule_interval="0 1 * * *",
+    ): ["*.baseline_clients_last_seen*"],
+    TaskRef(
+        dag_name="copy_deduplicate",
+        task_id="copy_deduplicate_all",
+        schedule_interval="0 1 * * *",
+    ): ["*_stable.*"],
+}
 
 
 @attr.s(auto_attribs=True)
@@ -89,6 +129,7 @@ class Task:
     owner: str = attr.ib()
     email: List[str] = attr.ib([])
     task_name: Optional[str] = attr.ib(None)
+    project: str = attr.ib(init=False)
     dataset: str = attr.ib(init=False)
     table: str = attr.ib(init=False)
     version: str = attr.ib(init=False)
@@ -101,9 +142,12 @@ class Task:
     arguments: List[str] = attr.ib([])
     parameters: List[str] = attr.ib([])
     multipart: bool = attr.ib(False)
-    sql_file_path: Optional[str] = None
+    query_file_path: Optional[str] = None
     priority: Optional[int] = None
-    referenced_tables: Optional[List[Tuple[str, str]]] = attr.ib(None)
+    referenced_tables: Optional[List[Tuple[str, str, str]]] = attr.ib(None)
+    allow_field_addition_on_date: Optional[str] = attr.ib(None)
+    destination_table: Optional[str] = attr.ib(default=DEFAULT_DESTINATION_TABLE_STR)
+    is_python_script: bool = attr.ib(False)
 
     @owner.validator
     def validate_owner(self, attribute, value):
@@ -148,17 +192,27 @@ class Task:
         """Extract information from the query file name."""
         query_file_re = re.search(QUERY_FILE_RE, self.query_file)
         if query_file_re:
-            self.dataset = query_file_re.group(1)
-            self.table = query_file_re.group(2)
-            self.version = query_file_re.group(3)
+            self.project = query_file_re.group(1)
+            self.dataset = query_file_re.group(2)
+            self.table = query_file_re.group(3)
+            self.version = query_file_re.group(4)
 
             if self.task_name is None:
                 self.task_name = f"{self.dataset}__{self.table}__{self.version}"
                 self.validate_task_name(None, self.task_name)
+
+            if self.destination_table == DEFAULT_DESTINATION_TABLE_STR:
+                self.destination_table = f"{self.table}_{self.version}"
+
+            if self.destination_table is None and self.query_file_path is None:
+                raise ValueError(
+                    "One of destination_table or query_file_path must be specified"
+                )
         else:
             raise ValueError(
                 "query_file must be a path with format:"
-                " ../<dataset>/<table>_<version>/(query.sql|part1.sql)"
+                " sql/<project>/<dataset>/<table>_<version>"
+                "/(query.sql|part1.sql|script.sql|query.py)"
                 f" but is {self.query_file}"
             )
 
@@ -173,7 +227,7 @@ class Task:
         """
         converter = cattr.Converter()
         if metadata is None:
-            metadata = Metadata.of_sql_file(query_file)
+            metadata = Metadata.of_query_file(query_file)
 
         dag_name = metadata.scheduling.get("dag_name")
         if dag_name is None:
@@ -224,74 +278,72 @@ class Task:
         """
         task = cls.of_query(query_file, metadata, dag_collection)
         task.multipart = True
-        task.sql_file_path = os.path.dirname(query_file)
+        task.query_file_path = os.path.dirname(query_file)
         return task
 
-    def _get_referenced_tables(self, client):
+    @classmethod
+    def of_script(cls, query_file, metadata=None, dag_collection=None):
         """
-        Perform a dry_run to get tables the query depends on.
+        Create task that schedules the corresponding script in Airflow.
 
-        Queries that reference more than 50 tables will not have a complete list
-        of dependencies. See https://cloud.google.com/bigquery/docs/reference/
-        rest/v2/Job#JobStatistics2.FIELDS.referenced_tables
+        Raises FileNotFoundError if no metadata file exists for query.
+        If `metadata` is set, then it is used instead of the metadata.yaml
+        file that might exist alongside the query file.
         """
+        task = cls.of_query(query_file, metadata, dag_collection)
+        task.query_file_path = query_file
+        task.destination_table = None
+        return task
+
+    @classmethod
+    def of_python_script(cls, query_file, metadata=None, dag_collection=None):
+        """
+        Create a task that schedules the Python script file in Airflow.
+
+        Raises FileNotFoundError if no metadata file exists for query.
+        If `metadata` is set, then it is used instead of the metadata.yaml
+        file that might exist alongside the query file.
+        """
+        task = cls.of_query(query_file, metadata, dag_collection)
+        task.query_file_path = query_file
+        task.is_python_script = True
+        return task
+
+    def _get_referenced_tables(self):
+        """Use zetasql to get tables the query depends on."""
         logging.info(f"Get dependencies for {self.task_name}")
 
+        if self.is_python_script:
+            # cannot do dry runs for python scripts
+            return self.referenced_tables or []
+
         if self.referenced_tables is None:
-            # check if there are query parameters that need to be set for dry-running
-            query_parameters = [
-                bigquery.ScalarQueryParameter(*(param.split(":")))
-                for param in self.parameters
-                if "submission_date" not in param
-            ]
-
-            # the submission_date parameter needs to be set to make the dry run faster
-            job_config = bigquery.QueryJobConfig(
-                dry_run=True,
-                use_query_cache=False,
-                default_dataset=f"{DEFAULT_PROJECT}.{self.dataset}",
-                query_parameters=[
-                    bigquery.ScalarQueryParameter(
-                        "submission_date", "DATE", "2019-01-01"
-                    )
-                ]
-                + query_parameters,
-            )
-
-            table_names = set()
-            query_files = [self.query_file]
+            query_files = [Path(self.query_file)]
 
             if self.multipart:
                 # dry_run all files if query is split into multiple parts
-                query_files = glob.glob(self.sql_file_path + "/*.sql")
+                query_files = Path(self.query_file_path).glob("*.sql")
 
-            for query_file in query_files:
-                with open(query_file) as query_stream:
-                    query = query_stream.read()
-                    query_job = client.query(query, job_config=job_config)
-                    referenced_tables = query_job.referenced_tables
-
-                    if len(referenced_tables) >= 50:
-                        logging.warn(
-                            "Query has 50 or more tables. Queries that reference more "
-                            "than 50 tables will not have a complete list of "
-                            "dependencies."
-                        )
-
-                    for t in referenced_tables:
-                        table_names.add((t.dataset_id, t.table_id))
+            table_names = {
+                tuple(table.split("."))
+                for query_file in query_files
+                for table in extract_table_references_without_views(query_file)
+            }
 
             # the order of table dependencies changes between requests
             # sort to maintain same order between DAG generation runs
             self.referenced_tables = sorted(table_names)
         return self.referenced_tables
 
-    def with_dependencies(self, client, dag_collection):
+    def with_dependencies(self, dag_collection):
         """Perfom a dry_run to get upstream dependencies."""
         dependencies = []
 
-        for table in self._get_referenced_tables(client):
-            upstream_task = dag_collection.task_for_table(table[0], table[1])
+        for table in self._get_referenced_tables():
+            upstream_task = dag_collection.task_for_table(table[0], table[1], table[2])
+            task_schedule_interval = dag_collection.dag_by_name(
+                self.dag_name
+            ).schedule_interval
 
             if upstream_task is not None:
                 # ensure there are no duplicate dependencies
@@ -304,9 +356,7 @@ class Task:
                     upstream_schedule_interval = dag_collection.dag_by_name(
                         upstream_task.dag_name
                     ).schedule_interval
-                    task_schedule_interval = dag_collection.dag_by_name(
-                        self.dag_name
-                    ).schedule_interval
+
                     execution_delta = schedule_interval_delta(
                         upstream_schedule_interval, task_schedule_interval
                     )
@@ -321,5 +371,28 @@ class Task:
                             execution_delta=execution_delta,
                         )
                     )
+            else:
+                # see if there are some static dependencies
+                for task, patterns in EXTERNAL_TASKS.items():
+                    if any(fnmatchcase(f"{table[1]}.{table[2]}", p) for p in patterns):
+                        # ensure there are no duplicate dependencies
+                        # manual dependency definitions overwrite automatically detected
+                        if not any(
+                            d.dag_name == task.dag_name and d.task_id == task.task_id
+                            for d in self.depends_on + dependencies
+                        ):
+                            execution_delta = schedule_interval_delta(
+                                task.schedule_interval, task_schedule_interval
+                            )
+
+                            if execution_delta:
+                                dependencies.append(
+                                    TaskRef(
+                                        dag_name=task.dag_name,
+                                        task_id=task.task_id,
+                                        execution_delta=execution_delta,
+                                    )
+                                )
+                        break  # stop after the first match
 
         self.dependencies = dependencies

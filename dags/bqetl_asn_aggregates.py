@@ -3,11 +3,26 @@
 from airflow import DAG
 from airflow.operators.sensors import ExternalTaskSensor
 import datetime
-from utils.gcp import bigquery_etl_query
+from utils.gcp import bigquery_etl_query, gke_command
+
+docs = """
+### bqetl_asn_aggregates
+
+Built from bigquery-etl repo, [`dags/bqetl_asn_aggregates.py`](https://github.com/mozilla/bigquery-etl/blob/master/dags/bqetl_asn_aggregates.py)
+
+#### Description
+
+The DAG schedules ASN aggregates queries.
+#### Owner
+
+ascholtz@mozilla.com
+"""
+
 
 default_args = {
     "owner": "ascholtz@mozilla.com",
     "start_date": datetime.datetime(2020, 4, 5, 0, 0),
+    "end_date": None,
     "email": ["ascholtz@mozilla.com", "tdsmith@mozilla.com"],
     "depends_on_past": False,
     "retry_delay": datetime.timedelta(seconds=1800),
@@ -17,7 +32,10 @@ default_args = {
 }
 
 with DAG(
-    "bqetl_asn_aggregates", default_args=default_args, schedule_interval="0 2 * * *"
+    "bqetl_asn_aggregates",
+    default_args=default_args,
+    schedule_interval="0 2 * * *",
+    doc_md=docs,
 ) as dag:
 
     telemetry_derived__asn_aggregates__v1 = bigquery_etl_query(
@@ -33,27 +51,14 @@ with DAG(
         dag=dag,
     )
 
-    wait_for_copy_deduplicate_event_events = ExternalTaskSensor(
-        task_id="wait_for_copy_deduplicate_event_events",
-        external_dag_id="copy_deduplicate",
-        external_task_id="event_events",
-        check_existence=True,
-        mode="reschedule",
-        dag=dag,
-    )
-
-    telemetry_derived__asn_aggregates__v1.set_upstream(
-        wait_for_copy_deduplicate_event_events
-    )
-    wait_for_copy_deduplicate_bq_main_events = ExternalTaskSensor(
-        task_id="wait_for_copy_deduplicate_bq_main_events",
+    wait_for_bq_main_events = ExternalTaskSensor(
+        task_id="wait_for_bq_main_events",
         external_dag_id="copy_deduplicate",
         external_task_id="bq_main_events",
+        execution_delta=datetime.timedelta(seconds=3600),
         check_existence=True,
         mode="reschedule",
-        dag=dag,
+        pool="DATA_ENG_EXTERNALTASKSENSOR",
     )
 
-    telemetry_derived__asn_aggregates__v1.set_upstream(
-        wait_for_copy_deduplicate_bq_main_events
-    )
+    telemetry_derived__asn_aggregates__v1.set_upstream(wait_for_bq_main_events)

@@ -1,6 +1,6 @@
 {{ header }}
 CREATE TABLE IF NOT EXISTS
-  `moz-fx-data-shared-prod.glam_etl.{{ prefix }}__clients_histogram_aggregates_v1`(
+  `{{ project }}.glam_etl.{{ prefix }}__clients_histogram_aggregates_v1`(
     sample_id INT64,
     client_id STRING,
     ping_type STRING,
@@ -10,7 +10,6 @@ CREATE TABLE IF NOT EXISTS
     channel STRING,
     histogram_aggregates ARRAY<
       STRUCT<
-        latest_version INT64,
         metric STRING,
         metric_type STRING,
         key STRING,

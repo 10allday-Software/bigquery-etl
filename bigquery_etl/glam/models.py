@@ -1,5 +1,5 @@
 """Variables for templated SQL."""
-from .utils import get_custom_distribution_metadata, compute_datacube_groupings
+from .utils import compute_datacube_groupings, get_custom_distribution_metadata
 
 
 def clients_scalar_aggregates(**kwargs):
@@ -56,7 +56,6 @@ def clients_histogram_aggregates(**kwargs):
         cubed_attributes=cubed_attributes,
         attribute_combinations=compute_datacube_groupings(cubed_attributes),
         metric_attributes="""
-            latest_version,
             metric,
             metric_type,
             key,
@@ -78,7 +77,8 @@ def scalar_bucket_counts(**kwargs):
         scalar_metric_types="""
             "counter",
             "quantity",
-            "labeled_counter"
+            "labeled_counter",
+            "timespan"
         """,
         boolean_metric_types="""
             "boolean"
@@ -105,13 +105,7 @@ def scalar_bucket_counts(**kwargs):
 def histogram_bucket_counts(**kwargs):
     """Variables for clients histogram bucket counts."""
     attributes_list = ["ping_type", "os", "app_version", "app_build_id", "channel"]
-    metric_attributes_list = [
-        "latest_version",
-        "metric",
-        "metric_type",
-        "key",
-        "agg_type",
-    ]
+    metric_attributes_list = ["metric", "metric_type", "key", "agg_type"]
     fixed_attributes = ["app_version", "channel"]
     cubed_attributes = [x for x in attributes_list if x not in fixed_attributes]
     return dict(
@@ -145,7 +139,8 @@ def probe_counts(**kwargs):
         scalar_metric_types="""
             "counter",
             "quantity",
-            "labeled_counter"
+            "labeled_counter",
+            "timespan"
         """,
         boolean_metric_types="""
             "boolean"

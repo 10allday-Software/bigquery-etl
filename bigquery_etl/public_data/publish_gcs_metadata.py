@@ -1,18 +1,18 @@
 """Generate and upload JSON metadata files for public datasets on GCS."""
 
-from argparse import ArgumentParser
 import json
 import logging
 import os
 import re
-import smart_open
-
-from google.cloud import storage
+from argparse import ArgumentParser
 from itertools import groupby
+
+import smart_open
+from google.cloud import storage
 
 from bigquery_etl.metadata.parse_metadata import Metadata
 from bigquery_etl.util import standard_args
-
+from bigquery_etl.util.common import project_dirs
 
 DEFAULT_BUCKET = "mozilla-public-data-http"
 DEFAULT_API_VERSION = "v1"
@@ -41,9 +41,6 @@ parser.add_argument(
     "--api-version",
     default=DEFAULT_API_VERSION,
     help="Endpoint API version",
-)
-parser.add_argument(
-    "--target", help="File or directory containing metadata files", default="sql/"
 )
 standard_args.add_log_level(parser)
 
@@ -77,8 +74,11 @@ class GcsTableMetadata:
         metadata_json["incremental"] = self.metadata.is_incremental()
         metadata_json["incremental_export"] = self.metadata.is_incremental_export()
 
-        if self.metadata.review_bug() is not None:
-            metadata_json["review_link"] = REVIEW_LINK + self.metadata.review_bug()
+        if self.metadata.review_bugs() is not None:
+            review_links = list(
+                map(lambda bug: REVIEW_LINK + str(bug), self.metadata.review_bugs())
+            )
+            metadata_json["review_links"] = review_links
 
         metadata_json["files_uri"] = self.files_uri
         metadata_json["last_updated"] = self.last_updated_uri
@@ -127,6 +127,8 @@ def get_public_gcs_table_metadata(
         GcsTableMetadata(list(blobs), endpoint, target_dir)
         for table, blobs in groupby(blobs, dataset_table_version_from_gcs_blob)
         if table is not None
+        and table[0] in os.listdir(target_dir)
+        and f"{table[1]}_{table[2]}" in os.listdir(os.path.join(target_dir, table[0]))
     ]
 
 
@@ -188,26 +190,36 @@ def main():
     except ValueError as e:
         parser.error(f"argument --log-level: {e}")
 
-    if os.path.isdir(args.target):
-        gcs_table_metadata = get_public_gcs_table_metadata(
-            storage_client,
-            args.target_bucket,
-            args.api_version,
-            args.endpoint,
-            args.target,
-        )
+    projects = project_dirs()
+    all_metadata = []
 
-        output_file = f"gs://{args.target_bucket}/all-datasets.json"
-        publish_all_datasets_metadata(gcs_table_metadata, output_file)
-        set_content_type(
-            storage_client, args.target_bucket, "all-datasets.json", "application/json"
-        )
-        publish_table_metadata(storage_client, gcs_table_metadata, args.target_bucket)
-    else:
-        print(
-            f"Invalid target: {args.target}, target must be a directory with"
-            "structure /<dataset>/<table>/metadata.yaml."
-        )
+    for target in projects:
+        if os.path.isdir(target):
+            gcs_table_metadata = get_public_gcs_table_metadata(
+                storage_client,
+                args.target_bucket,
+                args.api_version,
+                args.endpoint,
+                target,
+            )
+            all_metadata += gcs_table_metadata
+            publish_table_metadata(
+                storage_client, gcs_table_metadata, args.target_bucket
+            )
+        else:
+            print(
+                f"Invalid target: {target}, target must be a directory with"
+                "structure <project>/<dataset>/<table>/metadata.yaml."
+            )
+
+    output_file = f"gs://{args.target_bucket}/all-datasets.json"
+    publish_all_datasets_metadata(all_metadata, output_file)
+    set_content_type(
+        storage_client,
+        args.target_bucket,
+        "all-datasets.json",
+        "application/json",
+    )
 
 
 if __name__ == "__main__":

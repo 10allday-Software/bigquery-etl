@@ -3,9 +3,11 @@
 import argparse
 import sys
 from typing import Dict, List
+
 from jinja2 import Environment, PackageLoader
 
 from bigquery_etl.format_sql.formatter import reformat
+
 from .utils import get_schema, ping_type_from_table
 
 ATTRIBUTES = ",".join(
@@ -33,8 +35,8 @@ def get_labeled_metrics_sql(
 ) -> str:
     """Get the SQL for labeled scalar metrics."""
     probes_struct = []
-    for metric_type, probes in probes.items():
-        for probe in probes:
+    for metric_type, _probes in probes.items():
+        for probe in _probes:
             probes_struct.append(
                 f"('{probe}', '{metric_type}', metrics.{metric_type}.{probe})"
             )
@@ -61,18 +63,21 @@ def get_unlabeled_metrics_sql(probes: Dict[str, List[str]]) -> str:
             )
         )
 
-    for metric_type, probes in probes.items():
-        for probe in probes:
+    for metric_type, _probes in probes.items():
+        # timespans are nested within an object that also carries the unit of
+        # of time associated with the value
+        suffix = ".value" if metric_type == "timespan" else ""
+        for probe in _probes:
             for agg_func in ["max", "avg", "min", "sum"]:
                 probe_structs.append(
                     (
                         f"('{probe}', '{metric_type}', '', '{agg_func}', "
-                        f"{agg_func}(CAST(metrics.{metric_type}.{probe} AS INT64)))"
+                        f"{agg_func}(CAST(metrics.{metric_type}.{probe}{suffix} AS INT64)))"
                     )
                 )
             probe_structs.append(
                 f"('{probe}', '{metric_type}', '', 'count', "
-                f"IF(MIN(metrics.{metric_type}.{probe}) IS NULL, NULL, COUNT(*)))"
+                f"IF(MIN(metrics.{metric_type}.{probe}{suffix}) IS NULL, NULL, COUNT(*)))"
             )
 
     probe_structs.sort()
@@ -88,10 +93,12 @@ def get_scalar_metrics(schema: Dict, scalar_type: str) -> Dict[str, List[str]]:
     """
     assert scalar_type in ("unlabeled", "labeled")
     metric_type_set = {
-        "unlabeled": ["boolean", "counter", "quantity"],
+        "unlabeled": ["boolean", "counter", "quantity", "timespan"],
         "labeled": ["labeled_counter"],
     }
-    scalars = {metric_type: [] for metric_type in metric_type_set[scalar_type]}
+    scalars: Dict[str, List[str]] = {
+        metric_type: [] for metric_type in metric_type_set[scalar_type]
+    }
 
     # Iterate over every element in the schema under the metrics section and
     # collect a list of metric names.
@@ -115,12 +122,7 @@ def main():
         action="store_true",
         help="Generate a query without parameters",
     )
-    parser.add_argument(
-        "--source-table",
-        type=str,
-        help="Name of Glean table",
-        default="org_mozilla_fenix_stable.metrics_v1",
-    )
+    parser.add_argument("--source-table", type=str, help="Name of Glean table")
     args = parser.parse_args()
 
     # If set to 1 day, then runs of copy_deduplicate may not be done yet

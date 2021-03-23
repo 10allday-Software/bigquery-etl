@@ -1,18 +1,19 @@
 """Machinery for exporting query results as JSON to Cloud storage."""
 
-from argparse import ArgumentParser
-from google.cloud import storage
-from google.cloud import bigquery
 import datetime
 import json
-import smart_open
 import logging
-import sys
+import random
 import re
+import string
+import sys
+from argparse import ArgumentParser
+
+import smart_open
+from google.cloud import bigquery, storage
 
 from bigquery_etl.metadata.parse_metadata import Metadata
 from bigquery_etl.metadata.validate_metadata import validate_public_data
-
 
 SUBMISSION_DATE_RE = re.compile(r"^submission_date:DATE:(\d\d\d\d-\d\d-\d\d)$")
 QUERY_FILE_RE = re.compile(r"^.*/([a-zA-Z0-9_]+)/([a-zA-Z0-9_]+)_(v[0-9]+)/query\.sql$")
@@ -56,7 +57,7 @@ class JsonPublisher:
         self.date = None
         self.stage_gcs_path = self.gcs_path + "stage/json/"
 
-        self.metadata = Metadata.of_sql_file(self.query_file)
+        self.metadata = Metadata.of_query_file(self.query_file)
 
         # only for incremental exports files are written into separate directories
         # for each date, ignore date parameters for non-incremental exports
@@ -76,13 +77,6 @@ class JsonPublisher:
             logging.error("Invalid file naming format: {}", self.query_file)
             sys.exit(1)
 
-    def __del__(self):
-        """Delete temporary artifacts."""
-        if self.temp_table:
-            self.client.delete_table(self.temp_table)
-
-        self._clear_stage_directory()
-
     def _clear_stage_directory(self):
         """Delete files in stage directory."""
         tmp_blobs = self.storage_client.list_blobs(
@@ -96,23 +90,30 @@ class JsonPublisher:
         """Publish query results as JSON to GCP Storage bucket."""
         self.last_updated = datetime.datetime.utcnow()
 
-        if self.metadata.is_incremental_export():
-            if self.date is None:
-                logging.error(
-                    "Cannot publish JSON. submission_date missing in parameter."
-                )
-                sys.exit(1)
+        try:
+            if self.metadata.is_incremental_export():
+                if self.date is None:
+                    logging.error(
+                        "Cannot publish JSON. submission_date missing in parameter."
+                    )
+                    sys.exit(1)
 
-            # if it is an incremental query, then the query result needs to be
-            # written to a temporary table to get exported as JSON
-            self._write_results_to_temp_table()
-            self._publish_table_as_json(self.temp_table)
-        else:
-            # for non-incremental queries, the entire destination table is exported
-            result_table = f"{self.dataset}.{self.table}_{self.version}"
-            self._publish_table_as_json(result_table)
+                # if it is an incremental query, then the query result needs to be
+                # written to a temporary table to get exported as JSON
+                self._write_results_to_temp_table()
+                self._publish_table_as_json(self.temp_table)
+            else:
+                # for non-incremental queries, the entire destination table is exported
+                result_table = f"{self.dataset}.{self.table}_{self.version}"
+                self._publish_table_as_json(result_table)
 
-        self._publish_last_updated()
+            self._publish_last_updated()
+        finally:
+            # delete temporary artifacts
+            if self.temp_table:
+                self.client.delete_table(self.temp_table)
+
+            self._clear_stage_directory()
 
     def _publish_table_as_json(self, result_table):
         """Export the `result_table` data as JSON to Cloud Storage."""
@@ -228,7 +229,10 @@ class JsonPublisher:
 
     def _write_results_to_temp_table(self):
         """Write the query results to a temporary table and return the table name."""
-        table_date = self.date.replace("-", "")
+        table_date = self.date.replace("-", "") + "".join(
+            random.choice(string.ascii_lowercase) for i in range(12)
+        )
+
         self.temp_table = (
             f"{self.project_id}.tmp.{self.table}_{self.version}_{table_date}_temp"
         )
@@ -306,7 +310,7 @@ def main():
     args, query_arguments = parser.parse_known_args()
 
     try:
-        metadata = Metadata.of_sql_file(args.query_file)
+        metadata = Metadata.of_query_file(args.query_file)
     except FileNotFoundError:
         print("No metadata file for: {}".format(args.query_file))
         return

@@ -1,13 +1,14 @@
 """Generate templated views."""
-from pathlib import Path
 from argparse import ArgumentParser, Namespace
-from jinja2 import Environment, PackageLoader
+from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
+
+from jinja2 import Environment, PackageLoader, TemplateNotFound
+from jsonschema import validate
 
 from bigquery_etl.format_sql.formatter import reformat
 from bigquery_etl.glam import models
-
-from dataclasses import dataclass
-from functools import partial
 
 
 class QueryType:
@@ -42,10 +43,11 @@ def from_template(
     else:
         template = environment.get_template(f"{template_name}.sql")
 
+    template_filename = template_name.split("__")[-1]
     if query_name_prefix:
-        table_id = f"{args.prefix}__{query_name_prefix}_{template_name}"
+        table_id = f"{args.prefix}__{query_name_prefix}_{template_filename}"
     else:
-        table_id = f"{args.prefix}__{template_name}"
+        table_id = f"{args.prefix}__{template_filename}"
 
     # replaces the header, if it exists
     kwargs["header"] = f"-- {query_type} for {table_id};"
@@ -67,22 +69,18 @@ def from_template(
 def main():
     """Generate GLAM ETL queries."""
     parser = ArgumentParser(description=main.__doc__)
-    parser.add_argument("--prefix", default="org_mozilla_fenix")
+    parser.add_argument("--prefix")
+    parser.add_argument("--project", default="glam-fenix-dev")
     parser.add_argument("--dataset", default="glam_etl")
     parser.add_argument("--sql-root", default="sql/")
+    parser.add_argument("--daily-view-only", action="store_true", default=False)
     args = parser.parse_args()
 
     env = Environment(loader=PackageLoader("bigquery_etl", "glam/templates"))
 
-    dataset_path = Path(args.sql_root) / args.dataset
+    dataset_path = Path(args.sql_root) / args.project / args.dataset
     if not dataset_path.is_dir():
         raise NotADirectoryError(f"path to {dataset_path} not found")
-
-    build_date_udf_mapping = dict(
-        org_mozilla_fenix="`moz-fx-data-shared-prod`.udf.fenix_build_to_datetime"
-    )
-    if not build_date_udf_mapping.get(args.prefix):
-        raise ValueError(f"build date udf for {args.prefix} was not found")
 
     # curry functions for convenience
     template = partial(
@@ -92,10 +90,90 @@ def main():
     table = partial(template, QueryType.TABLE)
     init = partial(template, QueryType.INIT)
 
+    # If this is a logical app id, generate it. Assert that the daily view for
+    # the app exists. This assumes that both scalar and histogram aggregates
+    # exist and will break down in the case where a glean app only contains one
+    # of the scalar or histogram view.
+    for daily_view in [
+        "view_clients_daily_scalar_aggregates_v1",
+        "view_clients_daily_histogram_aggregates_v1",
+    ]:
+        try:
+            view(f"logical_app_id/{args.prefix}__{daily_view}")
+        except TemplateNotFound:
+            print(f"{args.prefix} is not a logical app id")
+            # generate the view for the app id directly
+            view(daily_view)
+
+        if not (dataset_path / f"{args.prefix}__{daily_view}").is_dir():
+            raise ValueError(f"missing {daily_view}")
+
+    # exit early if we're only generating a daily view
+    if args.daily_view_only:
+        return
+
+    # Supported fenix/firefox for android products. These are logical ids that
+    # are formed from the union of several app_ids (sometimes across date
+    # boundaries).
+    config_schema = {
+        "type": "object",
+        "additionalProperties": {
+            "type": "object",
+            "properties": {
+                "build_date_udf": {
+                    "type": "string",
+                    "description": (
+                        "The fully qualified path to a UDF that accepts the "
+                        "client_info.app_build_id field and returns a datetime."
+                    ),
+                },
+                "filter_version": {
+                    "type": "boolean",
+                    "description": (
+                        "Whether the integer extracted from the "
+                        "client_info.app_display_version should be used to "
+                        "filter incremental aggregates."
+                    ),
+                },
+                "num_versions_to_keep": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "The number of versions to keep.",
+                },
+            },
+            "required": ["build_date_udf", "filter_version", "num_versions_to_keep"],
+        },
+    }
+    config = {
+        "org_mozilla_fenix_glam_nightly": {
+            "build_date_udf": "mozfun.glam.build_hour_to_datetime",
+            "filter_version": True,
+            "num_versions_to_keep": 3,
+        },
+        "org_mozilla_fenix_glam_beta": {
+            "build_date_udf": "mozfun.glam.build_hour_to_datetime",
+            "filter_version": True,
+            "num_versions_to_keep": 3,
+        },
+        "org_mozilla_fenix_glam_release": {
+            "build_date_udf": "mozfun.glam.build_hour_to_datetime",
+            "filter_version": True,
+            "num_versions_to_keep": 3,
+        },
+    }
+    validate(instance=config, schema=config_schema)
+
+    if not config.get(args.prefix, {}).get("build_date_udf"):
+        raise ValueError(f"build date udf for {args.prefix} was not found")
+
     [
         table(
             "latest_versions_v1",
-            **dict(source_table=f"{args.prefix}_stable.baseline_v1"),
+            **dict(
+                source_table=(
+                    f"glam_etl.{args.prefix}__view_clients_daily_scalar_aggregates_v1"
+                )
+            ),
         ),
         init(
             "clients_scalar_aggregates_v1",
@@ -117,6 +195,7 @@ def main():
                 destination_table=(
                     f"glam_etl.{args.prefix}__clients_scalar_aggregates_v1"
                 ),
+                **config[args.prefix],
             ),
         ),
         init(
@@ -125,7 +204,9 @@ def main():
         ),
         table(
             "clients_histogram_aggregates_v1",
-            **models.clients_histogram_aggregates(parameterize=True),
+            **models.clients_histogram_aggregates(
+                parameterize=True, **config[args.prefix]
+            ),
         ),
         table(
             "scalar_bucket_counts_v1",
@@ -161,18 +242,11 @@ def main():
                 source_table=f"glam_etl.{args.prefix}__clients_scalar_aggregates_v1"
             ),
         ),
-        view("view_clients_daily_scalar_aggregates_v1"),
-        view("view_clients_daily_histogram_aggregates_v1"),
         table("histogram_percentiles_v1"),
         view("view_probe_counts_v1"),
         view("view_user_counts_v1", **models.user_counts()),
-        table(
-            "extract_user_counts_v1", build_date_udf=build_date_udf_mapping[args.prefix]
-        ),
-        table(
-            "extract_probe_counts_v1",
-            build_date_udf=build_date_udf_mapping[args.prefix],
-        ),
+        table("extract_user_counts_v1", **config[args.prefix]),
+        table("extract_probe_counts_v1", **config[args.prefix]),
     ]
 
 

@@ -1,17 +1,16 @@
 {{ header }}
 WITH extracted AS (
   SELECT
-    client_info.client_id,
-    client_info.app_channel AS channel,
-    COALESCE(
-      SAFE_CAST(SPLIT(client_info.app_display_version, '.')[OFFSET(0)] AS INT64),
-      0
-    ) AS app_version,
+    client_id,
+    channel,
+    app_version
   FROM
-    `moz-fx-data-shared-prod.{{ source_table }}`
+    {{ source_table }}
   WHERE
-    DATE(submission_timestamp) > DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
-    AND client_info.app_channel IS NOT NULL
+    submission_date
+    BETWEEN DATE_SUB(@submission_date, INTERVAL 28 DAY)
+    AND @submission_date
+    AND channel IS NOT NULL
 ),
 transformed AS (
   SELECT
@@ -23,7 +22,7 @@ transformed AS (
     channel,
     app_version
   HAVING
-    COUNT(DISTINCT client_id) > 100
+    COUNT(DISTINCT client_id) > 5
   ORDER BY
     channel,
     app_version DESC

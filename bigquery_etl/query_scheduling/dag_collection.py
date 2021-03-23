@@ -1,12 +1,15 @@
 """Represents a collection of configured Airflow DAGs."""
 
+from functools import partial
 from itertools import groupby
+from multiprocessing.pool import ThreadPool
 from operator import attrgetter
+from pathlib import Path
+
 import yaml
+from black import FileMode, format_file_contents
 
 from bigquery_etl.query_scheduling.dag import Dag, InvalidDag, PublicDataJsonDag
-from functools import partial
-from multiprocessing.pool import ThreadPool
 
 
 class DagCollection:
@@ -60,11 +63,15 @@ class DagCollection:
         """Return the DAG with the provided name."""
         return self.dags_by_name.get(name)
 
-    def task_for_table(self, dataset, table):
+    def task_for_table(self, project, dataset, table):
         """Return the task that schedules the query for the provided table."""
         for dag in self.dags:
             for task in dag.tasks:
-                if dataset == task.dataset and table == f"{task.table}_{task.version}":
+                if (
+                    project == task.project
+                    and dataset == task.dataset
+                    and table == f"{task.table}_{task.version}"
+                ):
                     return task
 
         return None
@@ -93,14 +100,18 @@ class DagCollection:
 
         return self
 
-    def dag_to_airflow(self, output_dir, client, dag):
+    def dag_to_airflow(self, output_dir, dag):
         """Generate the Airflow DAG representation for the provided DAG."""
-        output_file = output_dir / (dag.name + ".py")
-        output_file.write_text(dag.to_airflow_dag(client, self))
+        output_file = Path(output_dir) / (dag.name + ".py")
+        formatted_dag = format_file_contents(
+            dag.to_airflow_dag(self), fast=False, mode=FileMode()
+        )
+        output_file.write_text(formatted_dag)
 
-    def to_airflow_dags(self, output_dir, client):
+    def to_airflow_dags(self, output_dir, dag_to_generate=None):
         """Write DAG representation as Airflow dags to file."""
-        with ThreadPool(8) as p:
-            p.map(
-                partial(self.dag_to_airflow, output_dir, client), self.dags, chunksize=1
-            )
+        if dag_to_generate is None:
+            with ThreadPool(8) as p:
+                p.map(partial(self.dag_to_airflow, output_dir), self.dags, chunksize=1)
+        else:
+            self.dag_to_airflow(output_dir, self.dag_by_name(dag_to_generate))

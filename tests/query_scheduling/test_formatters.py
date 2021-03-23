@@ -1,12 +1,14 @@
+import datetime
+
+import pytest
+
 from bigquery_etl.query_scheduling.formatters import (
-    format_schedule_interval,
     format_attr,
     format_date,
-    format_timedelta,
     format_optional_string,
+    format_schedule_interval,
+    format_timedelta,
 )
-import datetime
-import pytest
 
 
 class TestFormatters:
@@ -24,8 +26,7 @@ class TestFormatters:
         ) == {"interval": "'@daily'", "a": 12}
 
     def test_format_date(self):
-        with pytest.raises(TypeError):
-            assert format_date(None)
+        assert format_date(None) is None
 
         with pytest.raises(ValueError):
             assert format_date("March 12th 2020")

@@ -1,15 +1,16 @@
 """Validates SQL examples in documentations."""
 
-from argparse import ArgumentParser
 import os
-from pathlib import Path
+import sys
 import tempfile
+from argparse import ArgumentParser
+from pathlib import Path
 
-from bigquery_etl.dryrun import dry_run_sql_file
-from bigquery_etl.parse_udf import read_udf_dirs, persistent_udf_as_temp
+from bigquery_etl.dryrun import DryRun
+from bigquery_etl.routine.parse_routine import read_routine_dir, sub_local_routines
 from bigquery_etl.util import standard_args
 
-DEFAULT_PROJECTS = ["mozfun"]
+DEFAULT_PROJECTS_DIRS = ["sql/mozfun"]
 EXAMPLE_DIR = "examples"
 UDF_FILE = "udf.sql"
 UDF_CHAR = "[a-zA-z0-9_]"
@@ -21,54 +22,26 @@ parser.add_argument(
     "--project-dirs",
     help="Directories of projects documentation is validated for.",
     nargs="+",
-    default=DEFAULT_PROJECTS,
+    default=DEFAULT_PROJECTS_DIRS,
 )
 standard_args.add_log_level(parser)
 
 
-def sql_for_dry_run(file, parsed_udfs, project_dir):
-    """
-    Return the example SQL used for the dry run.
+def validate(project_dirs):
+    """Validate UDF docs."""
+    is_valid = True
 
-    Injects all UDFs the example depends on as temporary functions.
-    """
-    dry_run_sql = ""
-
-    with open(file) as sql:
-        example_sql = sql.read()
-
-        # add UDFs that example depends on as temporary functions
-        for udf, raw_udf in parsed_udfs.items():
-            if udf in example_sql:
-                query = "".join(raw_udf.definitions)
-                dry_run_sql += persistent_udf_as_temp(query, parsed_udfs)
-
-        dry_run_sql += example_sql
-
-        for udf, _ in parsed_udfs.items():
-            # temporary UDFs cannot contain dots, rename UDFS
-            dry_run_sql = dry_run_sql.replace(udf, udf.replace(".", "_"))
-
-        # remove explicit project references
-        dry_run_sql = dry_run_sql.replace(project_dir + ".", "")
-
-    return dry_run_sql
-
-
-def main():
-    """Validate SQL examples."""
-    args = parser.parse_args()
-
-    # parse UDFs
-    parsed_udfs = read_udf_dirs(*args.project_dirs)
-
-    for project_dir in args.project_dirs:
+    for project_dir in project_dirs:
         if os.path.isdir(project_dir):
+            parsed_routines = read_routine_dir(project_dir)
+
             for root, dirs, files in os.walk(project_dir):
                 if os.path.basename(root) == EXAMPLE_DIR:
                     for file in files:
-                        dry_run_sql = sql_for_dry_run(
-                            os.path.join(root, file), parsed_udfs, project_dir
+                        dry_run_sql = sub_local_routines(
+                            (Path(root) / file).read_text(),
+                            project_dir,
+                            parsed_routines,
                         )
 
                         # store sql in temporary file for dry_run
@@ -77,7 +50,18 @@ def main():
                         tmp_example_file = tmp_dir / file
                         tmp_example_file.write_text(dry_run_sql)
 
-                        dry_run_sql_file(str(tmp_example_file))
+                        if not DryRun(str(tmp_example_file)).is_valid():
+                            is_valid = False
+
+    if not is_valid:
+        print("Invalid examples.")
+        sys.exit(1)
+
+
+def main():
+    """Validate SQL examples."""
+    args = parser.parse_args()
+    validate(args.project_dirs)
 
 
 if __name__ == "__main__":

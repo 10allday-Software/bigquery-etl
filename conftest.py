@@ -1,19 +1,20 @@
 """PyTest configuration."""
 
-from google.cloud import bigquery
-from google.cloud import storage
 import os
-import pytest
 import random
 import string
+import subprocess
+from pathlib import Path
 
+import pytest
+from google.cloud import bigquery, storage
 
 TEST_BUCKET = "bigquery-etl-integration-test-bucket"
 
 
 pytest_plugins = [
     "bigquery_etl.pytest_plugin.sql",
-    "bigquery_etl.pytest_plugin.udf",
+    "bigquery_etl.pytest_plugin.routine",
     "bigquery_etl.pytest_plugin.script_lint.black",
     "bigquery_etl.pytest_plugin.script_lint.docstyle",
     "bigquery_etl.pytest_plugin.script_lint.flake8",
@@ -28,10 +29,18 @@ def pytest_collection_modifyitems(config, items):
         return
 
     skip_integration = pytest.mark.skip(reason="integration marker not selected")
+    requires_java = pytest.mark.skipif(
+        subprocess.call(["which", "javac"], stdout=subprocess.DEVNULL) != 0
+        or len(list(Path(__file__).parent.glob("target/dependency/*.jar"))) == 0,
+        reason="requires javac and target/dependency/*.jar from "
+        "`mvn dependency:copy-dependencies`",
+    )
 
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip_integration)
+        if "java" in item.keywords:
+            item.add_marker(requires_java)
 
 
 @pytest.fixture
@@ -75,9 +84,6 @@ def test_bucket():
     bucket = storage_client.bucket(TEST_BUCKET)
 
     yield bucket
-
-    # cleanup test bucket
-    bucket.delete_blobs(bucket.list_blobs())
 
 
 @pytest.fixture

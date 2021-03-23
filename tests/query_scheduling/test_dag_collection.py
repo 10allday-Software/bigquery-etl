@@ -1,13 +1,12 @@
-from google.cloud import bigquery
-from jinja2 import Environment, PackageLoader
 import os
 from pathlib import Path
+
 import pytest
 
-from bigquery_etl.query_scheduling.dag_collection import DagCollection
-from bigquery_etl.query_scheduling.dag import InvalidDag, DagParseException
-from bigquery_etl.query_scheduling.task import Task
 from bigquery_etl.metadata.parse_metadata import Metadata
+from bigquery_etl.query_scheduling.dag import DagParseException, InvalidDag
+from bigquery_etl.query_scheduling.dag_collection import DagCollection
+from bigquery_etl.query_scheduling.task import Task
 
 TEST_DIR = Path(__file__).parent.parent
 
@@ -96,6 +95,7 @@ class TestDagCollection:
             TEST_DIR
             / "data"
             / "test_sql"
+            / "moz-fx-data-test-project"
             / "test"
             / "incremental_query_v1"
             / "query.sql"
@@ -120,7 +120,9 @@ class TestDagCollection:
             }
         ).with_tasks(tasks)
 
-        task = dags.task_for_table("test", "incremental_query_v1")
+        task = dags.task_for_table(
+            "moz-fx-data-test-project", "test", "incremental_query_v1"
+        )
 
         assert task
         assert task.dag_name == "bqetl_test_dag"
@@ -135,13 +137,19 @@ class TestDagCollection:
             }
         ).with_tasks([])
 
-        assert dags.task_for_table("test", "non_existing_table") is None
+        assert (
+            dags.task_for_table(
+                "moz-fx-data-test-project", "test", "non_existing_table"
+            )
+            is None
+        )
 
     def test_dags_with_tasks(self):
         query_file = (
             TEST_DIR
             / "data"
             / "test_sql"
+            / "moz-fx-data-test-project"
             / "test"
             / "incremental_query_v1"
             / "query.sql"
@@ -177,6 +185,7 @@ class TestDagCollection:
             query_file = (
                 TEST_DIR
                 / "data"
+                / "moz-fx-data-test-project"
                 / "test_sql"
                 / "test"
                 / "incremental_query_v1"
@@ -206,12 +215,13 @@ class TestDagCollection:
                 }
             ).with_tasks(tasks)
 
-    @pytest.mark.integration
-    def test_to_airflow(self, tmp_path, bigquery_client):
+    @pytest.mark.java
+    def test_to_airflow(self, tmp_path):
         query_file = (
             TEST_DIR
             / "data"
             / "test_sql"
+            / "moz-fx-data-test-project"
             / "test"
             / "non_incremental_query_v1"
             / "query.sql"
@@ -248,41 +258,71 @@ class TestDagCollection:
             }
         ).with_tasks(tasks)
 
-        dags.to_airflow_dags(tmp_path, bigquery_client)
+        dags.to_airflow_dags(tmp_path)
         result = (tmp_path / "bqetl_test_dag.py").read_text().strip()
         expected = (TEST_DIR / "data" / "dags" / "simple_test_dag").read_text().strip()
+        assert result == expected
+
+    def test_python_script_to_airflow(self, tmp_path):
+        query_file = (
+            TEST_DIR
+            / "data"
+            / "test_sql"
+            / "moz-fx-data-test-project"
+            / "test"
+            / "python_script_query_v1"
+            / "query.py"
+        )
+
+        metadata = Metadata(
+            "test",
+            "test",
+            ["test@example.com"],
+            {},
+            {
+                "dag_name": "bqetl_test_dag",
+                "depends_on_past": True,
+                "arguments": ["--date", "{{ds}}"],
+            },
+        )
+
+        tasks = [Task.of_python_script(query_file, metadata)]
+
+        default_args = {
+            "depends_on_past": False,
+            "owner": "test@example.org",
+            "email": ["test@example.org"],
+            "start_date": "2020-01-01",
+            "retry_delay": "1h",
+        }
+        dags = DagCollection.from_dict(
+            {
+                "bqetl_test_dag": {
+                    "schedule_interval": "daily",
+                    "default_args": default_args,
+                }
+            }
+        ).with_tasks(tasks)
+
+        dags.to_airflow_dags(tmp_path)
+        result = (tmp_path / "bqetl_test_dag.py").read_text().strip()
+        expected = (
+            (TEST_DIR / "data" / "dags" / "python_script_test_dag").read_text().strip()
+        )
 
         assert result == expected
 
-    @pytest.mark.integration
-    def test_to_airflow_with_dependencies(
-        self, tmp_path, project_id, temporary_dataset, bigquery_client
-    ):
-        query_file_path = tmp_path / "sql" / temporary_dataset / "query_v1"
+    @pytest.mark.java
+    def test_to_airflow_with_dependencies(self, tmp_path):
+        query_file_path = tmp_path / "test-project" / "test" / "query_v1"
         os.makedirs(query_file_path)
 
         query_file = query_file_path / "query.sql"
         query_file.write_text(
-            f"SELECT * FROM {project_id}.{temporary_dataset}.table1_v1 "
-            + f"UNION ALL SELECT * FROM {project_id}.{temporary_dataset}.table2_v1 "
-            + "UNION ALL SELECT * FROM "
-            + f"{project_id}.{temporary_dataset}.external_table_v1"
+            "SELECT * FROM `test-project`.test.table1_v1 "
+            "UNION ALL SELECT * FROM `test-project`.test.table2_v1 "
+            "UNION ALL SELECT * FROM `test-project`.test.external_table_v1"
         )
-
-        schema = [bigquery.SchemaField("a", "STRING", mode="NULLABLE")]
-        table = bigquery.Table(
-            f"{project_id}.{temporary_dataset}.table1_v1", schema=schema
-        )
-        bigquery_client.create_table(table)
-        table = bigquery.Table(
-            f"{project_id}.{temporary_dataset}.table2_v1", schema=schema
-        )
-        bigquery_client.create_table(table)
-
-        table = bigquery.Table(
-            f"{project_id}.{temporary_dataset}.external_table_v1", schema=schema
-        )
-        bigquery_client.create_table(table)
 
         metadata = Metadata(
             "test",
@@ -298,19 +338,21 @@ class TestDagCollection:
         task = Task.of_query(query_file, metadata)
 
         table_task1 = Task.of_query(
-            tmp_path / "sql" / temporary_dataset / "table1_v1" / "query.sql", metadata
+            tmp_path / "test-project" / "test" / "table1_v1" / "query.sql",
+            metadata,
         )
 
-        os.makedirs(tmp_path / "sql" / temporary_dataset / "table1_v1")
-        query_file = tmp_path / "sql" / temporary_dataset / "table1_v1" / "query.sql"
+        os.makedirs(tmp_path / "test-project" / "test" / "table1_v1")
+        query_file = tmp_path / "test-project" / "test" / "table1_v1" / "query.sql"
         query_file.write_text("SELECT 1")
 
         table_task2 = Task.of_query(
-            tmp_path / "sql" / temporary_dataset / "table2_v1" / "query.sql", metadata
+            tmp_path / "test-project" / "test" / "table2_v1" / "query.sql",
+            metadata,
         )
 
-        os.makedirs(tmp_path / "sql" / temporary_dataset / "table2_v1")
-        query_file = tmp_path / "sql" / temporary_dataset / "table2_v1" / "query.sql"
+        os.makedirs(tmp_path / "test-project" / "test" / "table2_v1")
+        query_file = tmp_path / "test-project" / "test" / "table2_v1" / "query.sql"
         query_file.write_text("SELECT 2")
 
         metadata = Metadata(
@@ -325,13 +367,13 @@ class TestDagCollection:
         )
 
         external_table_task = Task.of_query(
-            tmp_path / "sql" / temporary_dataset / "external_table_v1" / "query.sql",
+            tmp_path / "test-project" / "test" / "external_table_v1" / "query.sql",
             metadata,
         )
 
-        os.makedirs(tmp_path / "sql" / temporary_dataset / "external_table_v1")
+        os.makedirs(tmp_path / "test-project" / "test" / "external_table_v1")
         query_file = (
-            tmp_path / "sql" / temporary_dataset / "external_table_v1" / "query.sql"
+            tmp_path / "test-project" / "test" / "external_table_v1" / "query.sql"
         )
         query_file.write_text("SELECT 3")
 
@@ -354,20 +396,18 @@ class TestDagCollection:
             }
         ).with_tasks([task, table_task1, table_task2, external_table_task])
 
-        dags.to_airflow_dags(tmp_path, bigquery_client)
+        dags.to_airflow_dags(tmp_path)
 
-        # we need to use templates since the temporary dataset name changes between runs
-        env = Environment(loader=PackageLoader("tests", "data/dags"))
-
-        dag_template_with_dependencies = env.get_template("test_dag_with_dependencies")
-        dag_template_external_dependency = env.get_template(
-            "test_dag_external_dependency"
+        expected_dag_with_dependencies = (
+            (TEST_DIR / "data" / "dags" / "test_dag_with_dependencies")
+            .read_text()
+            .strip()
         )
-
-        args = {"temporary_dataset": temporary_dataset}
-
-        expected_dag_with_dependencies = dag_template_with_dependencies.render(args)
-        expected_dag_external_dependency = dag_template_external_dependency.render(args)
+        expected_dag_external_dependency = (
+            (TEST_DIR / "data" / "dags" / "test_dag_external_dependency")
+            .read_text()
+            .strip()
+        )
 
         dag_with_dependencies = (tmp_path / "bqetl_test_dag.py").read_text().strip()
         dag_external_dependency = (
@@ -377,12 +417,13 @@ class TestDagCollection:
         assert dag_with_dependencies == expected_dag_with_dependencies
         assert dag_external_dependency == expected_dag_external_dependency
 
-    @pytest.mark.integration
-    def test_public_json_dag_to_airflow(self, tmp_path, bigquery_client):
+    @pytest.mark.java
+    def test_public_json_dag_to_airflow(self, tmp_path):
         query_file = (
             TEST_DIR
             / "data"
             / "test_sql"
+            / "moz-fx-data-test-project"
             / "test"
             / "non_incremental_query_v1"
             / "query.sql"
@@ -411,7 +452,7 @@ class TestDagCollection:
             }
         ).with_tasks(tasks)
 
-        dags.to_airflow_dags(tmp_path, bigquery_client)
+        dags.to_airflow_dags(tmp_path)
         result = (tmp_path / "bqetl_public_data_json.py").read_text().strip()
         expected_dag = (
             (TEST_DIR / "data" / "dags" / "test_public_data_json_dag")
@@ -421,12 +462,13 @@ class TestDagCollection:
 
         assert result == expected_dag
 
-    @pytest.mark.integration
-    def test_to_airflow_duplicate_dependencies(self, tmp_path, bigquery_client):
+    @pytest.mark.java
+    def test_to_airflow_duplicate_dependencies(self, tmp_path):
         query_file = (
             TEST_DIR
             / "data"
             / "test_sql"
+            / "moz-fx-data-test-project"
             / "test"
             / "non_incremental_query_v1"
             / "query.sql"
@@ -436,6 +478,7 @@ class TestDagCollection:
             TEST_DIR
             / "data"
             / "test_sql"
+            / "moz-fx-data-test-project"
             / "test"
             / "no_metadata_query_v1"
             / "query.sql"
@@ -471,7 +514,7 @@ class TestDagCollection:
             }
         ).with_tasks(tasks)
 
-        dags.to_airflow_dags(tmp_path, bigquery_client)
+        dags.to_airflow_dags(tmp_path)
         result = (tmp_path / "bqetl_test_dag.py").read_text().strip()
         expected = (
             (TEST_DIR / "data" / "dags" / "test_dag_duplicate_dependencies")

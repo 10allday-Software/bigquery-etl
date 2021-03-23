@@ -1,1 +1,4 @@
-# BigQuery ETL
+---
+template: home.html
+title: Home
+---

@@ -1,5 +1,7 @@
 """Delete user data from long term storage."""
 
+import logging
+import warnings
 from argparse import ArgumentParser
 from collections import defaultdict
 from dataclasses import dataclass, replace
@@ -10,8 +12,6 @@ from multiprocessing.pool import ThreadPool
 from operator import attrgetter
 from textwrap import dedent
 from typing import Callable, Iterable, Optional, Tuple
-import logging
-import warnings
 
 from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
@@ -21,14 +21,36 @@ from ..util import standard_args
 from ..util.bigquery_id import FULL_JOB_ID_RE, full_job_id, sql_table_id
 from ..util.client_queue import ClientQueue
 from ..util.exceptions import BigQueryInsertError
-from .config import DeleteSource, DELETE_TARGETS, find_glean_targets
-
+from .config import (
+    DELETE_TARGETS,
+    DeleteSource,
+    find_experiment_analysis_targets,
+    find_glean_targets,
+    find_pioneer_targets,
+)
 
 NULL_PARTITION_ID = "__NULL__"
 OUTSIDE_RANGE_PARTITION_ID = "__UNPARTITIONED__"
 
 parser = ArgumentParser(description=__doc__)
 standard_args.add_dry_run(parser)
+parser.add_argument(
+    "--environment",
+    default="telemetry",
+    const="telemetry",
+    nargs="?",
+    choices=["telemetry", "pioneer"],
+    help="environment to run in (dictates the choice of source and target tables):"
+    "telemetry - standard environment"
+    "pioneer - restricted pioneer environment",
+)
+parser.add_argument(
+    "--pioneer-study-projects",
+    "--pioneer_study_projects",
+    default=[],
+    help="Pioneer study-specific analysis projects to include in data deletion.",
+    type=lambda s: [i for i in s.split(",")],
+)
 parser.add_argument(
     "--partition-limit",
     "--partition_limit",
@@ -208,7 +230,7 @@ def get_partition_expr(table):
     if table.range_partitioning:
         return table.range_partitioning.field
     if table.time_partitioning:
-        return f"CAST({table.time_partitioning.field} AS DATE)"
+        return f"CAST({table.time_partitioning.field or '_PARTITIONTIME'} AS DATE)"
 
 
 @dataclass
@@ -394,11 +416,25 @@ def main():
                     )
                 ).result()
             )
-    with ThreadPool(args.parallelism) as pool:
-        glean_targets = find_glean_targets(pool, client)
+
+    if args.environment == "telemetry":
+        with ThreadPool(args.parallelism) as pool:
+            glean_targets = find_glean_targets(pool, client)
+            experiment_analysis_targets = find_experiment_analysis_targets(pool, client)
+        targets_with_sources = chain(
+            DELETE_TARGETS.items(),
+            glean_targets.items(),
+            experiment_analysis_targets.items(),
+        )
+    elif args.environment == "pioneer":
+        with ThreadPool(args.parallelism) as pool:
+            targets_with_sources = find_pioneer_targets(
+                pool, client, study_projects=args.pioneer_study_projects
+            ).items()
+
     tasks = [
         task
-        for target, sources in chain(DELETE_TARGETS.items(), glean_targets.items())
+        for target, sources in targets_with_sources
         if args.table_filter(target.table)
         for task in delete_from_table(
             client=client,
@@ -503,13 +539,13 @@ def main():
         jobs_by_table[tasks[i].table].append(job)
     bytes_processed = rows_deleted = 0
     for table, jobs in jobs_by_table.items():
-        table_bytes_processed = sum(job.total_bytes_processed for job in jobs)
+        table_bytes_processed = sum(job.total_bytes_processed or 0 for job in jobs)
         bytes_processed += table_bytes_processed
         table_id = sql_table_id(table)
         if args.dry_run:
             logging.info(f"Would scan {table_bytes_processed} bytes from {table_id}")
         else:
-            table_rows_deleted = sum(job.num_dml_affected_rows for job in jobs)
+            table_rows_deleted = sum(job.num_dml_affected_rows or 0 for job in jobs)
             rows_deleted += table_rows_deleted
             logging.info(
                 f"Scanned {table_bytes_processed} bytes and "

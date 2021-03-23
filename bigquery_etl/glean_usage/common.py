@@ -7,21 +7,26 @@ from pathlib import Path
 
 from jinja2 import Environment, PackageLoader
 
+from bigquery_etl.dryrun import DryRun
 from bigquery_etl.format_sql.formatter import reformat
 from bigquery_etl.util.bigquery_id import sql_table_id  # noqa E402
+from bigquery_etl.view import generate_stable_views
 
 
-def render(sql_filename, **kwargs) -> str:
+def render(sql_filename, format=True, **kwargs) -> str:
     """Render a given template query using Jinja."""
     env = Environment(loader=PackageLoader("bigquery_etl", "glean_usage/templates"))
     main_sql = env.get_template(sql_filename)
-    return reformat(main_sql.render(**kwargs))
+    rendered = main_sql.render(**kwargs)
+    if format:
+        rendered = reformat(rendered)
+    return rendered
 
 
 def write_sql(output_dir, full_table_id, basename, sql):
     """Write out a query to a location based on the table ID.
 
-    :param output_dir:    Base target directory (probably sql/)
+    :param output_dir:    Base target directory (probably sql/moz-fx-data-shared-prod/)
     :param full_table_id: Table ID in project.dataset.table form
     :param basename:      The name to give the written file (like query.sql)
     :param sql:           The query content to write out
@@ -35,40 +40,36 @@ def write_sql(output_dir, full_table_id, basename, sql):
         f.write("\n")
 
 
-def list_baseline_tables(client, pool, project_id, only_tables, table_filter):
-    """Make parallel BQ API calls to grab all Glean baseline stable tables.
-
-    See `util.standard_args` for more context on table filtering.
-
-    :param client:       A BigQuery client object
-    :param pool:         A process pool for handling concurrent calls
-    :param project_id:   Target project
-    :param only_tables:  An iterable of globs in `<stable_dataset>.<table>` format
-    :param table_filter: A function for determining whether to process a table
-    :return:             A list of matching tables
-    """
+def list_baseline_tables(project_id, only_tables, table_filter):
+    """Return names of all matching baseline tables in shared-prod."""
+    prod_baseline_tables = [
+        s.stable_table
+        for s in generate_stable_views.get_stable_table_schemas()
+        if s.schema_id == "moz://mozilla.org/schemas/glean/ping/1"
+        and s.bq_table == "baseline_v1"
+    ]
+    prod_datasets_with_baseline = [t.split(".")[0] for t in prod_baseline_tables]
+    stable_datasets = prod_datasets_with_baseline
     if only_tables and not _contains_glob(only_tables):
         # skip list calls when only_tables exists and contains no globs
-        return [f"{project_id}.{t}" for t in only_tables if table_filter(t)]
+        return [
+            f"{project_id}.{t}"
+            for t in only_tables
+            if table_filter(t) and t in prod_baseline_tables
+        ]
     if only_tables and not _contains_glob(
         _extract_dataset_from_glob(t) for t in only_tables
     ):
-        # skip list_datasets call when only_tables exists and datasets contain no globs
+        stable_datasets = {_extract_dataset_from_glob(t) for t in only_tables}
         stable_datasets = {
-            f"{project_id}.{_extract_dataset_from_glob(t)}" for t in only_tables
+            d
+            for d in stable_datasets
+            if d.endswith("_stable") and d in prod_datasets_with_baseline
         }
-    else:
-        stable_datasets = [
-            d.reference.dataset_id for d in client.list_datasets(project_id)
-        ]
-    stable_datasets = [d for d in stable_datasets if d.endswith("_stable")]
     return [
-        sql_table_id(t)
-        for tables in pool.map(client.list_tables, stable_datasets)
-        for t in tables
-        if table_filter(f"{t.dataset_id}.{t.table_id}")
-        and t.table_id == "baseline_v1"
-        and t.labels.get("schema_id") == "glean_ping_1"
+        f"{project_id}.{d}.baseline_v1"
+        for d in stable_datasets
+        if table_filter(f"{d}.baseline_v1")
     ]
 
 
@@ -85,6 +86,12 @@ def table_names_from_baseline(baseline_table):
         daily_view=f"{prefix}.baseline_clients_daily",
         last_seen_view=f"{prefix}.baseline_clients_last_seen",
     )
+
+
+def referenced_table_exists(view_sql):
+    """Dry run the given view SQL to see if its referent exists."""
+    dryrun = DryRun("foo/bar/view.sql", content=view_sql)
+    return 404 not in [e.get("code") for e in dryrun.errors()]
 
 
 def _contains_glob(patterns):

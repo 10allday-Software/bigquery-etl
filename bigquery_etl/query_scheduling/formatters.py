@@ -1,7 +1,7 @@
 """This file contains custom filters for formatting data types in Jinja templates."""
 
-from datetime import datetime, timedelta
 import re
+from datetime import datetime, timedelta
 
 from bigquery_etl import query_scheduling
 
@@ -29,6 +29,8 @@ def format_attr(d, attribute, formatter_name):
 
 def format_date(date_string):
     """Format a date string to a datetime object."""
+    if date_string is None:
+        return None
     return datetime.strptime(date_string, "%Y-%m-%d")
 
 

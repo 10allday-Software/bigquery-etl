@@ -2,9 +2,11 @@
 import argparse
 import sys
 from typing import Dict, List
+
 from jinja2 import Environment, PackageLoader
 
 from bigquery_etl.format_sql.formatter import reformat
+
 from .utils import get_schema, ping_type_from_table
 
 ATTRIBUTES = ",".join(
@@ -39,7 +41,7 @@ def get_distribution_metrics(schema: Dict) -> Dict[str, List[str]]:
         "memory_distribution",
         "custom_distribution",
     }
-    metrics = {metric_type: [] for metric_type in metric_type_set}
+    metrics: Dict[str, List[str]] = {metric_type: [] for metric_type in metric_type_set}
 
     # Iterate over every element in the schema under the metrics section and
     # collect a list of metric names.

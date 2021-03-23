@@ -1,2 +1,0 @@
-friendly_name: Bits28 Range
-description: Return an INT64 representing a range of bits from a source bit pattern.

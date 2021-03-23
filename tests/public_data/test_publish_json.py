@@ -1,11 +1,11 @@
 import json
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, call
+
 import pytest
 import smart_open
-from pathlib import Path
-from unittest.mock import call, Mock, MagicMock
 
 from bigquery_etl.public_data.publish_json import JsonPublisher
-
 
 TEST_DIR = Path(__file__).parent.parent
 
@@ -18,13 +18,20 @@ class TestPublishJson(object):
         TEST_DIR
         / "data"
         / "test_sql"
+        / "moz-fx-data-test-project"
         / "test"
         / "non_incremental_query_v1"
         / "query.sql"
     )
 
     incremental_sql_path = (
-        TEST_DIR / "data" / "test_sql" / "test" / "incremental_query_v1" / "query.sql"
+        TEST_DIR
+        / "data"
+        / "test_sql"
+        / "moz-fx-data-test-project"
+        / "test"
+        / "incremental_query_v1"
+        / "query.sql"
     )
 
     incremental_parameter = "submission_date:DATE:2020-03-15"
@@ -48,7 +55,7 @@ class TestPublishJson(object):
     mock_storage_client.list_blobs.return_value = [mock_blob]
     mock_storage_client.bucket.return_value = mock_bucket
 
-    temp_table = f"{project_id}.tmp.incremental_query_v1_20200315_temp"
+    temp_table = f"{project_id}.tmp.incremental_query_v1_20200315"
     non_incremental_table = f"{project_id}.test.non_incremental_query_v1"
     api_version = "v1"
 
@@ -123,7 +130,7 @@ class TestPublishJson(object):
         )
         publisher._write_results_to_temp_table()
 
-        assert publisher.temp_table == self.temp_table
+        assert publisher.temp_table.startswith(self.temp_table)
         self.mock_client.query.assert_called_once()
 
     def test_gcp_convert_ndjson_to_json(self):

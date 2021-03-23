@@ -3,15 +3,16 @@
 from airflow import DAG
 from airflow.operators.sensors import ExternalTaskSensor
 import datetime
-from utils.gcp import bigquery_etl_query
+from utils.gcp import bigquery_etl_query, gke_command
 
 default_args = {
     "owner": "ascholtz@mozilla.com",
-    "start_date": datetime.datetime(2020, 3, 29, 0, 0),
+    "start_date": datetime.datetime(2020, 10, 1, 0, 0),
+    "end_date": datetime.datetime(2021, 1, 1, 0, 0),
     "email": [
         "telemetry-alerts@mozilla.com",
         "ascholtz@mozilla.com",
-        "jmccrosky@mozilla.com",
+        "aplacitelli@mozilla.com",
     ],
     "depends_on_past": False,
     "retry_delay": datetime.timedelta(seconds=1800),
@@ -29,10 +30,10 @@ with DAG(
         destination_table="deviations_v1",
         dataset_id="telemetry_derived",
         project_id="moz-fx-data-shared-prod",
-        owner="jmccrosky@mozilla.com",
+        owner="ascholtz@mozilla.com",
         email=[
+            "aplacitelli@mozilla.com",
             "ascholtz@mozilla.com",
-            "jmccrosky@mozilla.com",
             "telemetry-alerts@mozilla.com",
         ],
         date_partition_parameter="submission_date",
@@ -47,6 +48,7 @@ with DAG(
         execution_delta=datetime.timedelta(seconds=3600),
         check_existence=True,
         mode="reschedule",
+        pool="DATA_ENG_EXTERNALTASKSENSOR",
         dag=dag,
     )
 

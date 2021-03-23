@@ -1,13 +1,12 @@
 import json
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, call
+
 import pytest
 import smart_open
-from pathlib import Path
-
-from datetime import datetime
-from unittest.mock import call, Mock, MagicMock
 
 import bigquery_etl.public_data.publish_gcs_metadata as pgm
-
 
 TEST_DIR = Path(__file__).parent.parent
 
@@ -17,7 +16,7 @@ class TestPublishGcsMetadata(object):
     project_id = "test-project-id"
     api_version = "v1"
     endpoint = "https://test.endpoint.mozilla.com/"
-    sql_dir = TEST_DIR / "data" / "test_sql"
+    sql_dir = TEST_DIR / "data" / "test_sql" / "moz-fx-data-test-project"
 
     mock_blob1 = Mock()
     mock_blob1.name = (
@@ -91,7 +90,7 @@ class TestPublishGcsMetadata(object):
         assert gcs_table_metadata.version == "v1"
         assert gcs_table_metadata.metadata.is_incremental() is False
         assert gcs_table_metadata.metadata.is_incremental_export() is False
-        assert gcs_table_metadata.metadata.review_bug() == "1999999"
+        assert gcs_table_metadata.metadata.review_bugs() == ["1999999", "12121212"]
         assert gcs_table_metadata.last_updated_path == last_updated_path
         assert gcs_table_metadata.last_updated_uri == self.endpoint + last_updated_path
 
@@ -114,8 +113,11 @@ class TestPublishGcsMetadata(object):
         assert result["friendly_name"] == "Test table for a non-incremental query"
         assert result["incremental"] is False
         assert result["incremental_export"] is False
-        review_link = "https://bugzilla.mozilla.org/show_bug.cgi?id=1999999"
-        assert result["review_link"] == review_link
+        review_link = [
+            "https://bugzilla.mozilla.org/show_bug.cgi?id=1999999",
+            "https://bugzilla.mozilla.org/show_bug.cgi?id=12121212",
+        ]
+        assert result["review_links"] == review_link
         assert result["files_uri"] == self.endpoint + files_path
         assert result["last_updated"] == self.endpoint + last_updated_path
 
@@ -280,3 +282,31 @@ class TestPublishGcsMetadata(object):
                 call(json.dumps(expected_incremental_query_json, indent=4)),
             ]
         )
+
+    def test_get_public_gcs_table_metadata_different_projects(self):
+        mock_blob1 = Mock()
+        mock_blob1.name = (
+            "api/v1/tables/test/non_incremental_query/v1/files/000000000000.json"
+        )
+        mock_blob1.updated = datetime(2020, 4, 3, 11, 30, 1)
+
+        mock_blob2 = Mock()
+        mock_blob2.name = "api/v1/tables/test/not_existing/v1/files/000000000000.json"
+        mock_blob2.updated = datetime(2020, 4, 3, 11, 25, 5)
+
+        mock_storage_client = Mock()
+        mock_storage_client.list_blobs.return_value = [mock_blob1, mock_blob2]
+
+        result = list(
+            pgm.get_public_gcs_table_metadata(
+                mock_storage_client,
+                self.test_bucket,
+                self.api_version,
+                self.endpoint,
+                self.sql_dir,
+            )
+        )
+
+        expected = self.endpoint + "api/v1/tables/test/non_incremental_query/v1/files"
+        assert len(result) == 1
+        assert result[0].files_uri == expected

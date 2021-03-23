@@ -1,6 +1,7 @@
 """Generic utility functions."""
+import os
 import re
-
+from typing import List
 
 # Search for all camelCase situations in reverse with arbitrary lookaheads.
 REV_WORD_BOUND_PAT = re.compile(
@@ -12,6 +13,7 @@ REV_WORD_BOUND_PAT = re.compile(
     """,
     re.VERBOSE,
 )
+SQL_DIR = "sql/"
 
 
 def snake_case(line: str) -> str:
@@ -22,3 +24,13 @@ def snake_case(line: str) -> str:
     words = REV_WORD_BOUND_PAT.split(subbed)
     # filter spaces between words and snake_case and reverse again
     return "_".join([w.lower() for w in words if w.strip()])[::-1]
+
+
+def project_dirs(project_id=None) -> List[str]:
+    """Return all project directories."""
+    if project_id is None:
+        return [
+            os.path.join(SQL_DIR, project_dir) for project_dir in os.listdir(SQL_DIR)
+        ]
+    else:
+        return [os.path.join(SQL_DIR, project_id)]

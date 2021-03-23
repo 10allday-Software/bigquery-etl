@@ -1,6 +1,8 @@
 #!/bin/bash
 
 # import run_query procedure from run_glam_sql without running the script
+PROJECT=${PROJECT:-moz-fx-data-shared-prod}
+DST_PROJECT=${DST_PROJECT:-$PROJECT}
 IMPORT=true source script/glam/run_glam_sql
 
 
@@ -36,12 +38,12 @@ function generate_and_run_sql {
         table_name_suffix+="_"
     fi
 
-    python3 "sql/telemetry_derived/clients_daily_${script_type}_aggregates_v1.sql.py" \
+    python3 "sql/moz-fx-data-shared-prod/telemetry_derived/clients_daily_${script_type}_aggregates_v1.sql.py" \
         "--agg-type=${probe_type}s" \
         $processes_argument \
-        > "sql/telemetry_derived/clients_daily_${probe_type}_aggregates_${table_name_suffix}v1/query.sql"
+        > "sql/moz-fx-data-shared-prod/telemetry_derived/clients_daily_${probe_type}_aggregates_${table_name_suffix}v1/query.sql"
 
-    echo "generated sql/telemetry_derived/clients_daily_${probe_type}_aggregates_${table_name_suffix}v1/query.sql"
+    echo "generated sql/moz-fx-data-shared-prod/telemetry_derived/clients_daily_${probe_type}_aggregates_${table_name_suffix}v1/query.sql"
 
     if [[ -z $RUN_QUERY ]]; then
         return

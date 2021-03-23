@@ -13,6 +13,28 @@ CustomDistributionMeta = namedtuple(
 )
 
 
+def run(command, **kwargs) -> str:
+    """Return the result of stdout and raise on subprocess error."""
+    if isinstance(command, list):
+        args = command
+    elif isinstance(command, str):
+        args = command.split()
+    else:
+        raise RuntimeError(f"run command is invalid: {command}")
+
+    try:
+        res = (
+            subprocess.run(args, stdout=subprocess.PIPE, check=True, **kwargs)
+            .stdout.decode()
+            .strip()
+        )
+    except subprocess.CalledProcessError as e:
+        print(e.output.decode())
+        raise e
+
+    return res
+
+
 def get_schema(table: str, project: str = "moz-fx-data-shared-prod"):
     """Return the dictionary representation of the BigQuery table schema.
 

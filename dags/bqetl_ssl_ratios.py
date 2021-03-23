@@ -3,11 +3,26 @@
 from airflow import DAG
 from airflow.operators.sensors import ExternalTaskSensor
 import datetime
-from utils.gcp import bigquery_etl_query
+from utils.gcp import bigquery_etl_query, gke_command
+
+docs = """
+### bqetl_ssl_ratios
+
+Built from bigquery-etl repo, [`dags/bqetl_ssl_ratios.py`](https://github.com/mozilla/bigquery-etl/blob/master/dags/bqetl_ssl_ratios.py)
+
+#### Description
+
+The DAG schedules SSL ratios queries.
+#### Owner
+
+chutten@mozilla.com
+"""
+
 
 default_args = {
     "owner": "chutten@mozilla.com",
     "start_date": datetime.datetime(2019, 7, 20, 0, 0),
+    "end_date": None,
     "email": ["telemetry-alerts@mozilla.com", "chutten@mozilla.com"],
     "depends_on_past": False,
     "retry_delay": datetime.timedelta(seconds=1800),
@@ -17,7 +32,10 @@ default_args = {
 }
 
 with DAG(
-    "bqetl_ssl_ratios", default_args=default_args, schedule_interval="0 2 * * *"
+    "bqetl_ssl_ratios",
+    default_args=default_args,
+    schedule_interval="0 2 * * *",
+    doc_md=docs,
 ) as dag:
 
     telemetry_derived__ssl_ratios__v1 = bigquery_etl_query(
@@ -32,16 +50,14 @@ with DAG(
         dag=dag,
     )
 
-    wait_for_copy_deduplicate_copy_deduplicate_main_ping = ExternalTaskSensor(
-        task_id="wait_for_copy_deduplicate_copy_deduplicate_main_ping",
+    wait_for_copy_deduplicate_main_ping = ExternalTaskSensor(
+        task_id="wait_for_copy_deduplicate_main_ping",
         external_dag_id="copy_deduplicate",
         external_task_id="copy_deduplicate_main_ping",
         execution_delta=datetime.timedelta(seconds=3600),
         check_existence=True,
         mode="reschedule",
-        dag=dag,
+        pool="DATA_ENG_EXTERNALTASKSENSOR",
     )
 
-    telemetry_derived__ssl_ratios__v1.set_upstream(
-        wait_for_copy_deduplicate_copy_deduplicate_main_ping
-    )
+    telemetry_derived__ssl_ratios__v1.set_upstream(wait_for_copy_deduplicate_main_ping)

@@ -1,7 +1,7 @@
 """Utility functions for scheduling queries."""
 
-from datetime import datetime
 import re
+from datetime import datetime
 
 
 def is_timedelta_string(s):
@@ -41,19 +41,13 @@ def is_valid_dag_name(name):
 # https://stackoverflow.com/questions/14203122/create-a-regular-expression-for-cron-statement
 SCHEDULE_INTERVAL_RE = re.compile(
     r"^(once|hourly|daily|weekly|monthly|yearly|"
-    r"((((\d+,)+\d+|(\d+(\/|-)\d+)|\d+|\*) ?){5,7})|"
+    r"((((\d+,)+\d+|(\d+(\/|-)\d+)|\d+|\*/\d+|\*) ?){5,7})|"
     r"((\d+h)?(\d+m)?(\d+s)?))$"
 )
 
 
 def is_schedule_interval(interval):
-    """
-    Check whether the provided string is a valid schedule interval.
-
-    Schedule intervals can be either in CRON format or one of:
-    @once, @hourly, @daily, @weekly, @monthly, @yearly
-    or a timedelta []d[]h[]m
-    """
+    """Check whether the provided string is a valid schedule interval."""
     return SCHEDULE_INTERVAL_RE.match(interval)
 
 
@@ -85,6 +79,9 @@ def schedule_interval_delta(schedule_interval1, schedule_interval2):
 
     si1 = schedule_interval1.replace("*", "0")
     si2 = schedule_interval2.replace("*", "0")
+
+    if cron_regex.match(si2) is None or cron_regex.match(si1) is None:
+        return None
 
     parts1 = cron_regex.match(si1).groupdict()
     parts2 = cron_regex.match(si2).groupdict()

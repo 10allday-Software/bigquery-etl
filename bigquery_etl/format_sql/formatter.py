@@ -1,13 +1,13 @@
 """Format SQL."""
 
-from dataclasses import replace
 import re
+from dataclasses import replace
 
 from .tokenizer import (
     AliasSeparator,
+    BlockEndKeyword,
     BlockKeyword,
     BlockStartKeyword,
-    BlockEndKeyword,
     ClosingBracket,
     Comment,
     ExpressionSeparator,
@@ -15,8 +15,8 @@ from .tokenizer import (
     Identifier,
     Literal,
     NewlineKeyword,
-    Operator,
     OpeningBracket,
+    Operator,
     ReservedKeyword,
     SpaceBeforeBracketKeyword,
     StatementSeparator,
@@ -288,7 +288,7 @@ def inline_block_format(tokens, max_line_length=100):
                 last_token_was_opening_bracket = line.ends_with_opening_bracket
 
 
-def reformat(query, format_=inline_block_format):
+def reformat(query, format_=inline_block_format, trailing_newline=False):
     """Reformat query and return as a string."""
     tokens = format_(tokenize(query))
-    return "".join(token.value for token in tokens)
+    return "".join(token.value for token in tokens) + ("\n" if trailing_newline else "")
